@@ -3,6 +3,21 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.slice(1);
 
+    // Definição dos cabeçalhos CORS
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': '*', // Permite qualquer origem
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+    };
+
+    // Responde às requisições preflight do CORS
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders,
+      });
+    }
+
     // Rota de redirecionamento
     if (path && !path.startsWith('api/')) {
       const destination = await env.LINKS.get(path);
@@ -19,14 +34,14 @@ export default {
       // Middleware de autenticação
       const authHeader = request.headers.get('Authorization');
       if (!authHeader || authHeader !== `Bearer ${env.AUTH_TOKEN}`) {
-        return new Response('Não autorizado', { status: 401 });
+        return new Response('Não autorizado', { status: 401, headers: corsHeaders });
       }
 
       // Rota para encurtar URL
       if (path === 'api/shorten' && request.method === 'POST') {
         const { url: longUrl } = await request.json();
         if (!longUrl) {
-          return new Response('URL não fornecida', { status: 400 });
+          return new Response('URL não fornecida', { status: 400, headers: corsHeaders });
         }
 
         // Verifica se a URL já foi encurtada
@@ -35,7 +50,7 @@ export default {
 
         if (existingCode) {
           return new Response(JSON.stringify({ code: existingCode, shortUrl: `${url.origin}/${existingCode}` }), {
-            headers: { 'Content-Type': 'application/json' },
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
 
@@ -44,7 +59,7 @@ export default {
         await env.URLS.put(urlHash, code);
 
         return new Response(JSON.stringify({ code, shortUrl: `${url.origin}/${code}` }), {
-          headers: { 'Content-Type': 'application/json' },
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
 
@@ -53,18 +68,18 @@ export default {
         const code = path.split('/')[2];
         const originalUrl = await env.LINKS.get(code);
         if (!originalUrl) {
-          return new Response('Link não encontrado', { status: 404 });
+          return new Response('Link não encontrado', { status: 404, headers: corsHeaders });
         }
 
         const clicks = await env.CLICKS.get(code) || 0;
 
         return new Response(JSON.stringify({ code, url: originalUrl, clicks: Number(clicks) }), {
-          headers: { 'Content-Type': 'application/json' },
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
     }
 
-    return new Response('Rota não encontrada', { status: 404 });
+    return new Response('Rota não encontrada', { status: 404, headers: corsHeaders });
   },
 };
 
