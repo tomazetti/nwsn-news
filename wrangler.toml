@@ -1,0 +1,11 @@
+name = "nwsn-news"
+main = "src/index.ts"
+compatibility_date = "2025-08-01"
+
+[[kv_namespaces]]
+binding = "LINKS"
+id = "8df8a5685558469e987206b304934f6f"
+
+[[kv_namespaces]]
+binding = "CLICKS"
+id = "ee2090c1c8804918ae06c03f1884b2c7"

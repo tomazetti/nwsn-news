@@ -1,0 +1,225 @@
+## Documento de Requisitos de Produto (PRD)
+
+**Projeto:** Encurtador de URL – nwsn.news
+**Versão:** 1.0 (01 ago 2025)
+**Proprietário:** Andre Tomazetti
+
+---
+
+### 1. Visão geral
+
+O projeto “nwsn.news” fornecerá um serviço *serverless* de encurtamento de URLs, sem interface gráfica, exposto via API REST. A solução se baseará em **Cloudflare Workers** para a lógica de roteamento e em **Cloudflare Workers KV** para persistir os dados (mapeamentos e contagem de cliques).
+
+Essa combinação garante latência muito baixa (execução na edge) e custo zero no plano gratuito, que oferece:
+
+* **100 000 leituras KV/dia, 1 000 gravações KV/dia e 1 GB de armazenamento** ([Cloudflare Docs][1])
+* **100 000 invocações de Worker/dia** ([Cloudflare Docs][2])
+
+Esses limites atendem ao cenário esperado: poucas criações de links (gravações) e grande volume de redirecionamentos (leituras).
+
+---
+
+### 2. Objetivos
+
+| Objetivo                                 | Indicador de sucesso                           |
+| ---------------------------------------- | ---------------------------------------------- |
+| Criar URLs curtas estáveis e permanentes | 99,99 % de disponibilidade p/ redirecionamento |
+| Garantir redirecionamento rápido         | p95 < 50 ms global                             |
+| Custear operação na camada gratuita      | Zero custo mensal até 100 k redirect/dia       |
+| Expor estatística de cliques por link    | 100 % de links com contador atualizado         |
+
+---
+
+### 3. Escopo
+
+**Incluído (MVP)**
+
+1. **API `POST /api/shorten`** – cria um código curto (slug aleatório base-62 de 6 chars).
+2. **Redirect `GET /:code`** – devolve HTTP 302 para a URL original.
+3. **Contador de cliques** – incremento em KV a cada acesso.
+4. **API `GET /api/stats/:code`** – retorna `{code, url, clicks}`.
+5. Autenticação por **token HMAC** no header `Authorization` (administrativo).
+6. Script de **migração/seed** para importar links legados.
+
+**Fora de escopo (backlog)**
+
+* Slugs personalizados, expirados ou privados
+* Dashboard visual de analytics
+* Integrações com BI externos
+
+---
+
+### 4. Usuários e necessidades
+
+| Persona                              | Necessidade-chave                              |
+| ------------------------------------ | ---------------------------------------------- |
+| **Aplicações internas do Newson**    | Encurtar links em conteúdo, monitorar cliques  |
+| **Automação (n8n / Home Assistant)** | Gerar links via API sem interface manual       |
+| **Leitor final**                     | Ser redirecionado com rapidez e confiabilidade |
+
+---
+
+### 5. Requisitos funcionais
+
+| ID   | Descrição                                                         |
+| ---- | ----------------------------------------------------------------- |
+| F-01 | O sistema deve gerar um slug único de 6 caracteres alfanuméricos. |
+| F-02 | Deve aceitar URL de entrada até 4 096 caracteres.                 |
+| F-03 | Deve persistir `{slug -> url}` em Workers KV.                     |
+| F-04 | Em cada redirecionamento, deve incrementar contador de cliques.   |
+| F-05 | Deve expor contador total via endpoint de estatísticas.           |
+| F-06 | Responder 404 para slug inexistente.                              |
+| F-07 | Autenticar endpoints de administração com token.                  |
+
+---
+
+### 6. Requisitos não-funcionais
+
+| Categoria       | Requisito                                             |
+| --------------- | ----------------------------------------------------- |
+| Performance     | P95 < 50 ms; P99 < 100 ms em qualquer região          |
+| Escalabilidade  | Suportar 100 k redirect/dia sem upgrade de plano      |
+| Confiabilidade  | ≤ 0,01 % erros de lookup (KV miss/inconsistência)     |
+| Segurança       | HTTPS, tokens secretos no KV, CORS restrito           |
+| Custos          | Operar integralmente no free tier (Workers + KV)      |
+| Observabilidade | Métricas no dashboard Cloudflare + logs wrangler tail |
+
+---
+
+### 7. Arquitetura
+
+```
+┌──────────────┐  GET /abc123 (302) ┌────────────┐
+│   Usuário    │ ───────────────────▶│  Worker    │
+└──────────────┘                     │(Edge PoP)  │
+      ▲                              └─────┬──────┘
+      │POST /api/shorten (token)           │ KV.get / KV.put
+      │GET  /api/stats/abc123 (token)      ▼
+┌──────────────┐                     ┌────────────┐
+│  Cliente API │                     │ Workers KV │
+└──────────────┘                     └────────────┘
+```
+
+* **Workers KV Namespaces**
+
+  * `LINKS`: chave=`slug`, valor=`url`
+  * `CLICKS`: chave=`slug`, valor=`int`
+* **Limitações de gravação**: 1 000 writes/dia e 1 write/sec para mesma chave. Se um link viralizar, contagem pode ficar imprecisa; aceitar variação ou migrar contagem p/ Durable Object (backlog).
+
+---
+
+### 8. Design da API
+
+**POST /api/shorten**
+
+```json
+{
+  "url": "https://example.com/materia?id=123"
+}
+```
+
+Resposta 200 OK
+
+```json
+{
+  "code": "abc123",
+  "shortUrl": "https://nwsn.news/abc123"
+}
+```
+
+**GET /api/stats/{code}**
+Resposta 200 OK
+
+```json
+{
+  "code": "abc123",
+  "url": "https://example.com/materia?id=123",
+  "clicks": 57
+}
+```
+
+---
+
+### 9. Segurança
+
+* **Autenticação**: header `Authorization: Bearer <TOKEN>` para rotas `/api/*`.
+* **Tokens** armazenados como *variables* do Worker.
+* **Rate limiting**: Cloudflare Gateway free rule (ex.: 1 000 req/min por IP) para `/api/*`.
+* **HTTPS** obrigatório; HSTS no domínio.
+
+---
+
+### 10. Observabilidade & métricas
+
+* **Cloudflare Analytics**: nº de requests, erros, latência.
+* **KV quota**: monitorar leituras/gravações via dashboard.
+* **Alertas** (Webhook/Email) ao atingir 80 % da cota diária.
+
+---
+
+### 11. Plano de deploy
+
+1. **Provisionar**:
+
+   * KV Namespaces `LINKS` e `CLICKS`.
+   * Variáveis de ambiente: `AUTH_TOKEN`.
+2. **Desenvolver** em TypeScript + Wrangler.
+3. **CI/CD** GitHub Actions → `wrangler deploy` em `main`.
+4. **DNS**: adicionar route `nwsn.news/*` → Worker.
+5. **Smoke tests**: criar link, redirecionar, consultar estatísticas.
+6. **Go-live**.
+
+---
+
+### 12. Cronograma
+
+| Fase         | Entregas                             | Data alvo   |
+| ------------ | ------------------------------------ | ----------- |
+| Planejamento | PRD aprovado                         | 05 ago 2025 |
+| Sprint 1     | Worker com redirect + KV (LINKS)     | 12 ago 2025 |
+| Sprint 2     | API shorten + token                  | 19 ago 2025 |
+| Sprint 3     | Contador de cliques + endpoint stats | 26 ago 2025 |
+| Hardening    | Rate-limit, alertas, docs            | 02 set 2025 |
+| Go-live      | Produção                             | 05 set 2025 |
+
+---
+
+### 13. Riscos & mitigação
+
+| Risco                             | Impacto                     | Plano                                                 |
+| --------------------------------- | --------------------------- | ----------------------------------------------------- |
+| Exceder 100 k requests/dia        | Interrupção do serviço      | Monitorar & migrar p/ plano Workers Paid              |
+| Limite de 1 write/sec/chave no KV | Contador impreciso em picos | Aceitar amostragem ou mover cliques p/ Durable Object |
+| Colisão de slug                   | Redirect incorreto          | Usar crypto-random + verificação de existência        |
+| Vazamento de token                | Criação de links maliciosos | Girar token, limitar IPs                              |
+
+---
+
+### 14. Sucesso & métricas-chave
+
+* **T0 + 30 dias:** ≥ 95 % dos links gerados via API.
+* **Latência p95:** < 50 ms em 3 continentes.
+* **Disponibilidade:** > 99,99 % (30 dias corridos).
+* **Custo:** \$0 enquanto volume ≤ 100 k redirect/dia.
+
+---
+
+### 15. Aprovação
+
+| Função        | Responsável     | Status |
+| ------------- | --------------- | ------ |
+| Product Owner | Andre Tomazetti | ☐      |
+| Eng. Leader   | —               | ☐      |
+| DevOps        | —               | ☐      |
+
+---
+
+**Anexos**
+
+* Diagrama de sequência detalhado (link Figma) – *(gerar na Sprint 1)*
+* Exemplo de código Worker (gist) – *(gerar na Sprint 1)*
+
+> **Observação:** este PRD assume o uso exclusivo de **KV** para contagem direta. Caso a taxa de cliques ultrapasse 1 incremento/segundo por slug, migrar o contador para **Durable Objects** (mesma stack, custo ainda zero até 1 000 DO invocações/dia) e manter o KV apenas para mapeamentos.
+
+[1]: https://developers.cloudflare.com/kv/platform/limits/?utm_source=chatgpt.com "Limits · Cloudflare Workers KV docs"
+[2]: https://developers.cloudflare.com/workers/platform/limits/?utm_source=chatgpt.com "Limits · Cloudflare Workers docs"
