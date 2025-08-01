@@ -29,8 +29,19 @@ export default {
           return new Response('URL não fornecida', { status: 400 });
         }
 
+        // Verifica se a URL já foi encurtada
+        const urlHash = await sha256(longUrl);
+        const existingCode = await env.URLS.get(urlHash);
+
+        if (existingCode) {
+          return new Response(JSON.stringify({ code: existingCode, shortUrl: `${url.origin}/${existingCode}` }), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
         const code = generateCode();
         await env.LINKS.put(code, longUrl);
+        await env.URLS.put(urlHash, code);
 
         return new Response(JSON.stringify({ code, shortUrl: `${url.origin}/${code}` }), {
           headers: { 'Content-Type': 'application/json' },
@@ -60,4 +71,11 @@ export default {
 function generateCode() {
   // Gera um código alfanumérico de 6 caracteres
   return Math.random().toString(36).substring(2, 8);
+}
+
+async function sha256(message) {
+  const msgBuffer = new TextEncoder().encode(message);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }

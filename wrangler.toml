@@ -9,3 +9,7 @@ id = "8df8a5685558469e987206b304934f6f"
 [[kv_namespaces]]
 binding = "CLICKS"
 id = "ee2090c1c8804918ae06c03f1884b2c7"
+
+[[kv_namespaces]]
+binding = "URLS"
+id = "cc4d3c19b6c8476dadb92e92aeb48262"
